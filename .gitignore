@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+
+# Local
+photon_prob/classes/test_oldstuff
+
 # C extensions
 *.so
 
