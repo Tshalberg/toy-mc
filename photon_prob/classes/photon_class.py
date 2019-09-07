@@ -159,8 +159,8 @@ class Photon_Simulation():
         N = self.N_photons
         dN = N//20
         for i, photon in enumerate(self.photons):
-            if self.verbose and N > 20 and i%dN == 0:
-                print "\r {} out of {} photons have been simulated".format(i, self.N_photons),
+            if self.verbose and N > 20 and (i+1)%dN == 0:
+                print "\r {} out of {} photons have been simulated".format(i+1, self.N_photons),
             c = 0
             while not photon.is_absorbed:
                 if photon.P_absorb == 0 and c > 10000:
