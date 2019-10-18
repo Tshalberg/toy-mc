@@ -7,12 +7,10 @@ import math
 from tqdm import tqdm_notebook as tqdm
 
 @cuda.jit
-def move(rng_states, start_x, start_y, out_x, out_y, doms, rs, domhits, domhitstimes, pa, ps, Nphotons):
-    """Find the maximum value in values and store in result[0]"""
+def move(rng_states, rd, ro, oc, pOut, doms, rs, domhits, domhitstimes, pa, ps, Nphotons):
+
     thread_id = cuda.grid(1)
-    
     if thread_id < Nphotons:
-    # if thread_id < 200:
 
         def rng():
             return xoroshiro128p_uniform_float32(rng_states, thread_id)
@@ -21,61 +19,79 @@ def move(rng_states, start_x, start_y, out_x, out_y, doms, rs, domhits, domhitst
             ranNum = rng()
             return -math.log(ranNum)*p
 
-        def domhit(center, radius, ro, rd, t_min, t_max):
-            oc = ro - center
+        def domhit(center, radius, ro, rd, oc, time, t_min, t_max):
+            oc[0] = ro[0] - center[0]
+            oc[1] = ro[1] - center[1]
+            a = 0
             a = rd.dot(rd)
+            b = 0
             b = oc.dot(rd)
-            c = oc.dot(oc) - radius*radius
+            c = 0
+            c = oc.dot(oc) 
+            c -= radius*radius
             discriminant = b*b - a*c
             if discriminant > 0:
                 temp = (-b - math.sqrt(b*b - a*c))/a
-                if temp < t_max and temp > t_min:
-                    pHit = ro + rd*temp
-                    tHit = temp
-                    return True, pHit, tHit
+                if (temp < t_max) and (temp > t_min):
+                    ro[0] += rd[0]*temp
+                    ro[1] += rd[1]*temp
+                    time = temp
+                    return True 
 
                 temp = (-b + math.sqrt(b*b - a*c))/a
                 if temp < t_max and temp > t_min:
-                    pHit = ro + rd*temp
-                    tHit = temp
-                    return True, pHit, tHit
-            return False, 0, 0
+                    ro[0] += rd[0]*temp
+                    ro[1] += rd[1]*temp
+                    time = temp
+                    return True 
+            return False 
 
-        def get_random_dir():
+        def get_random_dir(rd):
             d = rng()*math.pi*2
             vx = math.cos(d)
             vy = math.sin(d)
-            return np.array([vx, vy], dtype=np.float32)
+            rd[0] = vx
+            rd[1] = vy
 
-        
-        x = start_x
-        y = start_y
-        d = rng()*math.pi*2
-        vx = math.cos(d)
-        vy = math.sin(d)
-        absorbed = False
-        time = 0
-        while not absorbed:
-            if rng() < ps:#1:
-                d = xoroshiro128p_uniform_float32(rng_states, thread_id)*math.pi*2
-                vx = math.cos(d)
-                vy = math.sin(d)
-            if rng() < pa:#05:
-                absorbed = True
-            x += vx
-            y += vy
+
+        thread_id = 0
+        if thread_id < Nphotons:
+            get_random_dir(rd) 
+            pDist = ln(pa)
+            scatter = ln(ps)
+            t = 0
+            tHit = 0
+            while scatter < pDist:
+
+                for i in range(len(doms)):
+                    center = doms[i]
+                    radius = rs[i]
+                    if domhit(center, radius, ro, rd, oc, tHit, 0, scatter):
+                        domhits[thread_id, i] += 1
+                        domhitstimes[thread_id, i] = t + tHit
+                        pOut[thread_id, 0] = ro[0]
+                        pOut[thread_id, 1] = ro[1]
+                        return
+
+                t += scatter
+                ro[0] = rd[0]*scatter
+                ro[1] = rd[1]*scatter
+                pDist = pDist - scatter
+                get_random_dir(rd)
+                scatter = ln(ps)
+                
             for i in range(len(doms)):
-                domx = doms[i,0]
-                domy = doms[i,1]
-                r = rs[i]
-                if r >= (math.sqrt((domx-x)**2 + (domy-y)**2)):
+                center = doms[i]
+                radius = rs[i]
+                if domhit(center, radius, ro, rd, oc, tHit, 0, pDist):
                     domhits[thread_id, i] += 1
-                    domhitstimes[thread_id, i] = time
-                    absorbed = True
-            time += 1
+                    domhitstimes[thread_id, i] = t + tHit
+                    pOut[thread_id, 0] = ro[0]
+                    pOut[thread_id, 1] = ro[1]
+                    return
 
-        out_x[thread_id] = x
-        out_y[thread_id] = y
+            pOut[thread_id, 0] = np.nan
+            pOut[thread_id, 1] = np.nan
 
 
 def create_doms(xlim, ylim, dx, dy, r):
@@ -99,7 +115,9 @@ def simulate(Nexp, N, initial_poisition, doms, rs, threads_per_block, pa=0.01, p
     import time
     blocks = N//threads_per_block + 1
     # N = threads_per_block * blocks
-    x_start, y_start = np.array(initial_poisition, dtype=np.float32)
+    ro = np.array(initial_poisition, dtype=np.float32)
+    rd = np.zeros((1,2), dtype=np.float32)
+    oc = np.zeros((1,2), dtype=np.float32)
 
     domhits_all = []
     domhitstimes_all = []
@@ -114,13 +132,13 @@ def simulate(Nexp, N, initial_poisition, doms, rs, threads_per_block, pa=0.01, p
         # Initialize the random states for the kernel
         rng_states = create_xoroshiro128p_states(N, seed=RanSeed)
         # Create empty arrays for the (x, y) values
-        out_x, out_y = np.zeros(N, dtype=np.float32), np.zeros(N, dtype=np.float32)
+        pOut = np.zeros((N,2), dtype=np.float32)
         # Create empty array for domhits
         domhits = np.zeros((N, len(rs)), dtype=np.int32)
         domhitstimes = np.zeros((N, len(rs)), dtype=np.int32)
 
         # Calculate x, y and domhits
-        move[blocks, threads_per_block](rng_states, x_start, y_start, out_x, out_y, 
+        move[blocks, threads_per_block](rng_states, rd, ro, oc, pOut, 
                                         doms, rs, domhits, domhitstimes, pa, ps, N)
         # Save the hit information
         domhits = np.sum(domhits, axis=0)

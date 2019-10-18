@@ -8,7 +8,6 @@ from tqdm import tqdm_notebook as tqdm
 
 @cuda.jit
 def move(rng_states, start_x, start_y, out_x, out_y, doms, rs, domhits, domhitstimes, pa, ps, Nphotons):
-    """Find the maximum value in values and store in result[0]"""
     thread_id = cuda.grid(1)
     
     if thread_id < Nphotons:
@@ -68,6 +67,7 @@ def simulate(Nexp, N, initial_position, doms, rs, threads_per_block, pa=0.01, ps
     import time
     blocks = N//threads_per_block + 1
     # N = threads_per_block * blocks
+    # print initial_position
     x_start, y_start = np.array(initial_position, dtype=np.float32)
 
     domhits_all = []
